@@ -19,3 +19,5 @@ _*.tmp
 Thumbs.db
 desktop.ini
 .DS_Store
+# 临时预览图（自己 eyeball 用的，不是资产）
+build/_*.png
