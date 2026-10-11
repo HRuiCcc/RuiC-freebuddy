@@ -1,0 +1,21 @@
+# 依赖（本机是指向别的工程 node_modules 的 junction，绝不能进库）
+node_modules/
+
+# 构建产物：NSIS 安装包 ~107MB，clone 下来自己 build 即可
+release/
+dist/
+*.blockmap
+latest.yml
+
+# 验收截图（screen grab，不是源码资产；brand 资产在 build/ 里）
+tools/*.png
+tools/*.log
+
+# 运行期落盘的东西（数据目录本来就在 %APPDATA%）
+*.log
+_*.tmp
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
