@@ -124,6 +124,10 @@ var ICONS = {
   play: ['M8 5.5v13l11-6.5Z'],
   pause: ['M9 5.5v13', 'M15 5.5v13'],
   eye: ['M2.5 12S6 6 12 6s9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z', 'M12 14.6a2.6 2.6 0 1 0 0-5.2 2.6 2.6 0 0 0 0 5.2Z'],
+  // 暂存：收件盘
+  stash: ['M3.5 12.5 6 6.5h12l2.5 6v4.2a1.8 1.8 0 0 1-1.8 1.8H5.3a1.8 1.8 0 0 1-1.8-1.8Z', 'M3.5 12.5H8l1 2.2h6l1-2.2h4.5'],
+  // 快捷短语：气泡 + 闪电
+  phrase: ['M4.5 6.8A2.3 2.3 0 0 1 6.8 4.5h10.4a2.3 2.3 0 0 1 2.3 2.3v6.4a2.3 2.3 0 0 1-2.3 2.3H9.2L4.5 19.2Z', 'M12.6 7.2 9.8 11h3.4l-2.4 3.6'],
 };
 
 /* ───────── API ───────── */
@@ -588,6 +592,425 @@ function setupNoDisturb() {
   ndScan();
 }
 
+/* ───────── 输入框增强：暂存提示词 / 快捷短语 ─────────
+   这两颗按钮长在 **WorkBuddy 自己的输入框工具栏**里（不在我们的 Shadow DOM 内），
+   所以：用内联样式 + 一份 fbx- 前缀的文档级样式表；挂载后由 MutationObserver 看守，
+   React 重渲染把我们冲掉就重新挂回去。 */
+
+var CT_CSS = [
+  '.fbx-tools{display:inline-flex;align-items:center;gap:4px;margin-left:6px}',
+  '.fbx-btn{width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;',
+  'border:0;background:transparent;border-radius:8px;cursor:pointer;color:inherit;opacity:.72;padding:0}',
+  '.fbx-btn:hover{background:rgba(127,127,127,.16);opacity:1}',
+  '.fbx-btn.is-busy{opacity:.4;cursor:default}',
+  '.fbx-btn svg{width:17px;height:17px}',
+].join('');
+
+var ctState = { observer: null, timer: null, mounted: false, menu: null, docCss: false };
+
+// 找到 WorkBuddy 的输入框及其工具栏（cr-* 命名空间是它的输入框）
+function ctComposer() {
+  var box = document.querySelector('.cr-input-box') || document.querySelector('.conversation-input');
+  if (!box) return null;
+  var editable = box.querySelector('[contenteditable="true"]');
+  var left = box.querySelector('.cr-input-toolbar__left') || box.querySelector('.cr-input-toolbar');
+  var send = box.querySelector('.cr-send-button');
+  if (!editable || !left || !send) return null;
+  return { box: box, editable: editable, left: left, send: send };
+}
+
+function ctEnsureDocCss() {
+  if (ctState.docCss) return;
+  if (document.getElementById('freebuddy-doc-css')) { ctState.docCss = true; return; }
+  var st = document.createElement('style');
+  st.id = 'freebuddy-doc-css';
+  st.textContent = CT_CSS;
+  (document.head || document.documentElement).appendChild(st);
+  ctState.docCss = true;
+}
+
+function ctBtn(icon, title, onclick) {
+  var b = h('button', { class: 'fbx-btn', type: 'button', title: title, 'aria-label': title, onclick: onclick });
+  b.appendChild(svg(ICONS[icon]));
+  return b;
+}
+
+// 把两颗按钮挂进工具栏（按设置决定出现哪几颗）
+function ctMountTools() {
+  var set = S.settings || {};
+  var wantStash = !!set.stashPrompt;
+  var wantPhrase = !!set.quickPhrases;
+  var c = ctComposer();
+  if (!c) return;
+  var tools = c.left.querySelector('.fbx-tools');
+  if (!wantStash && !wantPhrase) {
+    if (tools) tools.remove();
+    ctState.mounted = false;
+    return;
+  }
+  ctEnsureDocCss();
+  if (!tools) {
+    tools = h('div', { class: 'fbx-tools' });
+    c.left.appendChild(tools);
+  }
+  // 按需重建内容（数量少，直接重铺最省心）
+  var sig = (wantStash ? 's' : '') + (wantPhrase ? 'p' : '') + ':' + ((set.phrases || []).length);
+  if (tools.getAttribute('data-sig') === sig) { ctState.mounted = true; return; }
+  tools.setAttribute('data-sig', sig);
+  tools.textContent = '';
+  if (wantStash) tools.appendChild(ctBtn('stash', '暂存提示词（FreeBuddy）', ctDoStash));
+  if (wantPhrase) tools.appendChild(ctBtn('phrase', '快捷短语（FreeBuddy）', ctOpenPhrases));
+  ctState.mounted = true;
+}
+
+function ctSchedule() {
+  if (ctState.timer) return;
+  ctState.timer = setTimeout(function () {
+    ctState.timer = null;
+    try {
+      ctMountTools();
+    } catch (e) {
+      /* 别影响页面 */
+    }
+  }, 500);
+}
+
+/* ── 读 / 清 / 填 输入框 ── */
+
+// WorkBuddy 在输入框为空时会把**占位文案真的写进 DOM**（前面还挂一个零宽字符），
+// 所以「有没有内容」必须先把它精确剔掉 —— 否则暂存会把占位词存进队列，
+// 自动续接也会永远以为「用户正在写草稿」而不敢动作。
+var CT_PLACEHOLDER_RE = /^今天帮你做些什么？\s*@\s*引用对话文件[，,]?\s*\/\s*调用技能与指令$/;
+
+function ctRealText(ed) {
+  var t = String((ed && (ed.innerText || ed.textContent)) || '')
+    .replace(/[\u200b\ufeff]/g, '')
+    .trim();
+  return CT_PLACEHOLDER_RE.test(t) ? '' : t;
+}
+
+function ctHasContent() {
+  var c = ctComposer();
+  return !!c && !!ctRealText(c.editable);
+}
+
+function ctCapture() {
+  var c = ctComposer();
+  if (!c) return null;
+  var ed = c.editable;
+  var text = ctRealText(ed);
+  var files = [];
+  // 编辑区之外的图片/附件 chip 是「外部附件」（编辑区内的内联图片已经在 html 里了）
+  var imgs = c.box.querySelectorAll('img');
+  for (var i = 0; i < imgs.length; i++) {
+    if (ed.contains(imgs[i])) continue;
+    files.push({
+      name: imgs[i].getAttribute('alt') || imgs[i].getAttribute('data-name') || ('图片附件 ' + (i + 1)),
+      size: 0,
+      type: 'image',
+    });
+  }
+  var chips = c.box.querySelectorAll('[class*="attachment" i],[class*="file-chip" i],[class*="upload-" i]');
+  for (var j = 0; j < chips.length; j++) {
+    if (ed.contains(chips[j])) continue;
+    var t = (chips[j].textContent || '').trim().slice(0, 120);
+    if (t) files.push({ name: t, size: 0, type: '' });
+  }
+  return { text: text, html: text ? ed.innerHTML || '' : '', files: files };
+}
+
+function ctPickAll(ed) {
+  var sel = window.getSelection();
+  if (!sel) return false;
+  var range = document.createRange();
+  range.selectNodeContents(ed);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  return true;
+}
+
+// 清空：走 execCommand('delete')，编辑器才会收到它认得的输入事件
+function ctClear() {
+  var c = ctComposer();
+  if (!c) return false;
+  c.editable.focus();
+  if (!ctPickAll(c.editable)) return false;
+  try {
+    document.execCommand('delete');
+  } catch (e) {
+    return false;
+  }
+  return true;
+}
+
+// 写入正文：优先 execCommand（编辑器自己会处理），失败再退回直接改 DOM + 派发 input。
+// 给了 html 就先试 insertHTML —— 这样暂存下来的内联图片 / 格式能原样填回去。
+function ctInsert(text, html) {
+  var c = ctComposer();
+  if (!c) return false;
+  var ed = c.editable;
+  ed.focus();
+  ctPickAll(ed);
+  var ok = false;
+  if (html) {
+    try {
+      ok = document.execCommand('insertHTML', false, html);
+    } catch (e) {
+      ok = false;
+    }
+  }
+  if (!ok || !(ed.innerText || '').trim()) {
+    try {
+      ok = document.execCommand('insertText', false, text);
+    } catch (e) {
+      ok = false;
+    }
+  }
+  if (!ok || !(ed.innerText || '').trim()) {
+    ed.textContent = text;
+    try {
+      ed.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    } catch (e) {
+      ed.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+  return true;
+}
+
+// 发送：等一拍让 React 把发送按钮的 disabled 摘掉，再点它；还不行就敲回车
+function ctSend() {
+  return new Promise(function (resolve) {
+    setTimeout(function () {
+      var c = ctComposer();
+      if (!c) return resolve(false);
+      if (c.send.disabled) {
+        try {
+          c.editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        } catch (e) {
+          /* 忽略 */
+        }
+        return setTimeout(function () {
+          var c2 = ctComposer();
+          resolve(!!c2 && !c2.send.disabled ? (c2.send.click(), true) : false);
+        }, 220);
+      }
+      c.send.click();
+      resolve(true);
+    }, 160);
+  });
+}
+
+function ctInsertAndSend(text, label, html) {
+  if (!ctInsert(text, html)) {
+    toast('没找到输入框，先把 WorkBuddy 的会话打开', 'error');
+    return;
+  }
+  ctSend().then(function (ok) {
+    if (ok) toast((label || '已发送'), 'ok');
+    else toast('内容已填进输入框，但没能自动发送 —— 手动敲一下回车', 'warn');
+  });
+}
+
+/* ── 暂存提示词 ── */
+
+function ctDoStash() {
+  var cap = ctCapture();
+  if (!cap) {
+    toast('没找到输入框', 'error');
+    return;
+  }
+  if (!String(cap.text || '').trim() && !cap.files.length) {
+    toast('输入框是空的，没什么可暂存的', 'warn');
+    return;
+  }  api('/api/stash/add', { method: 'POST', body: cap }).then(function (r) {
+    if (!r.ok) {
+      toast(r.error || '暂存失败', 'error');
+      return;
+    }
+    ctClear();
+    var n = cap.files.length;
+    toast('已暂存到待发送队列' + (n ? '（含 ' + n + ' 个附件记录）' : ''), 'ok');
+    if (S.tab === 'enhance') loadStash(true);
+  });
+}
+
+/* ── 快捷短语浮层（长在 Shadow DOM 里，跟着面板的深浅色走） ── */
+
+function ctCloseMenu() {
+  if (ctState.menu) {
+    ctState.menu.remove();
+    ctState.menu = null;
+  }
+}
+
+function ctOpenPhrases() {
+  var set = S.settings || {};
+  var phrases = set.phrases || [];
+  if (!phrases.length) {
+    toast('还没有快捷短语，去面板「增强」里加几条', 'warn');
+    return;
+  }
+  if (ctState.menu) {
+    ctCloseMenu();
+    return;
+  }
+  var c = ctComposer();
+  var anchor = c ? c.left.querySelector('.fbx-btn:last-child') : null;
+  var box = h('div', { class: 'fb-pop fb-phrase-pop' });
+  for (var i = 0; i < phrases.length; i++) {
+    (function (p) {
+      var row = h('button', { class: 'fb-pop-row', type: 'button' }, [
+        h('b', { text: p.label }),
+        h('small', { text: (p.text || '').replace(/\s+/g, ' ').slice(0, 80) }),
+      ]);
+      row.addEventListener('click', function () {
+        ctCloseMenu();
+        ctInsertAndSend(p.text, '已发送「' + p.label + '」');
+      });
+      box.appendChild(row);
+    })(phrases[i]);
+  }
+  ctState.menu = box;
+  append(shadow, [box]);
+  // 贴在那颗按钮上方
+  var r = anchor ? anchor.getBoundingClientRect() : null;
+  if (r) {
+    box.style.left = Math.max(8, Math.round(r.left)) + 'px';
+    box.style.top = Math.max(8, Math.round(r.top - box.offsetHeight - 8)) + 'px';
+  } else {
+    box.style.left = '24px';
+    box.style.top = '24px';
+  }
+}
+
+/* ── 异常中断自动续接 ──
+   信号：助手消息里出现「已取消」指示 / 会话事件被取消 / 错误标记；
+   生成中（发送按钮变成 stop）一律不动；输入框里有草稿也不动（不能吃掉人家正在写的东西）。 */
+
+var acState = { observer: null, timer: null, lastSig: '', strikes: 0, windowAt: 0 };
+
+var AC_SIGNALS = '.cr-cancelled-indicator, .cr-conversation-event--cancelled, .cr-status-error, .cr-widget-error, .cr-internal-status-error';
+
+function acGenerating() {
+  var b = document.querySelector('.cr-send-button');
+  return !!(b && /--stop|--sending/.test(b.className || ''));
+}
+
+function acComposerDirty() {
+  return ctHasContent();
+}
+
+// 找到页面上现成的「继续 / 重试」按钮（有就点它，比自己发一条更贴合原意）
+function acNativeContinue() {
+  var scope = document.querySelector('.cr-message-list') || document.body;
+  var btns = scope.querySelectorAll('button, [role="button"]');
+  for (var i = 0; i < btns.length; i++) {
+    var b = btns[i];
+    if (b.closest && b.closest('#freebuddy-host')) continue;
+    var t = ((b.textContent || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).trim();
+    if (!/^(继续|继续执行|重试|重新生成|Continue|Retry|Resume)$/i.test(t)) continue;
+    if (b.disabled) continue;
+    var r = b.getBoundingClientRect();
+    if (r.width < 8 || r.height < 8) continue;
+    return b;
+  }
+  return null;
+}
+
+function acScan() {
+  if (!(S.settings && S.settings.autoContinue)) return;
+  if (acGenerating()) return;
+  if (acComposerDirty()) return;
+  var marks = document.querySelectorAll(AC_SIGNALS);
+  var n = 0;
+  for (var i = 0; i < marks.length; i++) {
+    if (marks[i].closest && marks[i].closest('#freebuddy-host')) continue;
+    var r = marks[i].getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    n++;
+  }
+  if (!n) return;
+  // 同一个中断只认一次：用「信号数 + 最后一条消息的高度」当签名，变了才动作
+  var items = document.querySelectorAll('.cr-document__virtual-item');
+  var last = items.length ? items[items.length - 1].getBoundingClientRect() : { height: 0 };
+  var sig = n + ':' + Math.round(last.height) + ':' + items.length;
+  if (sig === acState.lastSig) return;
+  // 限速：10 分钟窗口内最多自动续 5 次，避免错误页上无限重试
+  var now = Date.now();
+  if (!acState.windowAt || now - acState.windowAt > 600000) {
+    acState.windowAt = now;
+    acState.strikes = 0;
+  }
+  if (acState.strikes >= 5) return;
+  acState.lastSig = sig;
+  acState.strikes++;
+  var native = acNativeContinue();
+  if (native) {
+    native.click();
+    toast('检测到回复中断，已点「继续」', 'ok');
+    return;
+  }
+  ctInsertAndSend('继续', '检测到回复中断，已自动续接');
+}
+
+function acSchedule() {
+  if (acState.timer) return;
+  acState.timer = setTimeout(function () {
+    acState.timer = null;
+    try {
+      acScan();
+    } catch (e) {
+      /* 忽略 */
+    }
+  }, 900);
+}
+
+/* ── 装配 ── */
+
+function setupComposerTools() {
+  var want = !!(S.settings && (S.settings.stashPrompt || S.settings.quickPhrases));
+  if (!want) {
+    var c = ctComposer();
+    var tools = c && c.left.querySelector('.fbx-tools');
+    if (tools) tools.remove();
+    ctState.mounted = false;
+    ctCloseMenu();
+    if (ctState.observer) {
+      ctState.observer.disconnect();
+      ctState.observer = null;
+    }
+    return;
+  }
+  ctMountTools();
+  if (ctState.observer) return;
+  ctState.observer = new MutationObserver(ctSchedule);
+  ctState.observer.observe(document.body, { childList: true, subtree: true });
+  listeners.push(function () {
+    if (ctState.observer) ctState.observer.disconnect();
+    ctState.observer = null;
+    if (ctState.timer) clearTimeout(ctState.timer);
+    ctState.timer = null;
+    ctCloseMenu();
+  });
+}
+
+function setupAutoContinue() {
+  if (acState.observer) {
+    acState.observer.disconnect();
+    acState.observer = null;
+  }
+  if (!(S.settings && S.settings.autoContinue)) return;
+  acState.observer = new MutationObserver(acSchedule);
+  acState.observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  listeners.push(function () {
+    if (acState.observer) acState.observer.disconnect();
+    acState.observer = null;
+    if (acState.timer) clearTimeout(acState.timer);
+    acState.timer = null;
+  });
+  acSchedule();
+}
+
 function doCheckin(acc) {
   toast('正在为 ' + (acc.note || acc.nickname || '该账号') + ' 签到…', 'info');
   api('/api/checkin', { method: 'POST', body: { uid: acc.uid } }).then(function (r) {
@@ -990,9 +1413,157 @@ function switchEl(on, onToggle) {
   return el;
 }
 
-function soonSwitch() {
-  var el = h('button', { class: 'fb-switch is-disabled', role: 'switch', 'aria-checked': 'false', title: '后续版本支持' });
-  return h('div', { class: 'fb-soon' }, [el, h('span', { class: 'fb-badge', text: 'v0.2' })]);
+/* ───────── 视图：增强 ───────── */
+
+var stashCache = { items: [], at: 0 };
+
+function loadStash(force) {
+  if (!force && Date.now() - stashCache.at < 4000) return Promise.resolve(null);
+  return api('/api/stash').then(function (r) {
+    if (r.ok) {
+      stashCache.items = r.items || [];
+      stashCache.at = Date.now();
+      if (S.tab === 'enhance') render();
+    }
+    return r;
+  });
+}
+
+function shortTime(ts) {
+  if (!ts) return '';
+  var d = new Date(ts);
+  var p = function (n) { return (n < 10 ? '0' : '') + n; };
+  return d.getMonth() + 1 + '/' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+// 待发送队列：每行可「填回输入框」或删掉
+function stashBlock() {
+  var items = stashCache.items;
+  var head = h('div', { class: 'fb-sub-head' }, [
+    h('span', { text: '待发送队列 · ' + items.length + ' 条' }),
+    h('div', { class: 'fb-grow' }),
+    h('button', { class: 'fb-mini-btn', title: '刷新', onclick: function () { loadStash(true); } }, [svg(ICONS.refresh)]),
+    items.length
+      ? h('button', {
+          class: 'fb-mini-btn is-danger',
+          text: '清空',
+          onclick: function () {
+            api('/api/stash/clear', { method: 'POST', body: {} }).then(function (r) {
+              if (r.ok) { toast('队列已清空', 'ok'); loadStash(true); } else toast(r.error || '清空失败', 'error');
+            });
+          },
+        })
+      : null,
+  ]);
+  var list = h('div', { class: 'fb-stash' });
+  if (!items.length) {
+    list.appendChild(h('div', { class: 'fb-note', text: '还没有暂存的草稿。在 WorkBuddy 输入框里点右边的暂存按钮，草稿就会进这里。' }));
+  }
+  for (var i = 0; i < items.length; i++) {
+    (function (it) {
+      var files = (it.files || []).length;
+      var row = h('div', { class: 'fb-stash-row' }, [
+        h('div', { class: 'fb-stash-main' }, [
+          h('div', { class: 'fb-stash-text', text: (it.text || '').replace(/\s+/g, ' ').slice(0, 160) || '（只有附件）' }),
+          h('div', { class: 'fb-stash-meta', text: shortTime(it.at) + (files ? ' · 含 ' + files + ' 个附件记录' : '') }),
+        ]),
+        h('div', { class: 'fb-stash-ops' }, [
+          h('button', {
+            class: 'fb-mini-btn',
+            text: '填回输入框',
+            onclick: function () {
+              api('/api/stash/get', { method: 'POST', body: { id: it.id } }).then(function (r) {
+                if (!r.ok) { toast(r.error || '取不到了', 'error'); return; }
+                var full = r.item;
+                var html = full.html && /<img|data:image/i.test(full.html) ? full.html : null;
+                if (!ctInsert(full.text || '', html)) { toast('没找到输入框，先把会话打开', 'error'); return; }
+                toast(files ? '已填回输入框（附件需手动重新加上）' : '已填回输入框', 'ok');
+              });
+            },
+          }),
+          h('button', {
+            class: 'fb-mini-btn is-danger',
+            text: '删',
+            onclick: function () {
+              api('/api/stash/remove', { method: 'POST', body: { id: it.id } }).then(function (r) {
+                if (r.ok) loadStash(true);
+                else toast(r.error || '删除失败', 'error');
+              });
+            },
+          }),
+        ]),
+      ]);
+      list.appendChild(row);
+    })(items[i]);
+  }
+  return h('div', { class: 'fb-stash-wrap' }, [head, list]);
+}
+
+// 快捷短语编辑器：名称 + 内容，一次提交整份清单
+function phrasesBlock() {
+  var set = S.settings || {};
+  var list = (set.phrases || []).slice();
+  var wrap = h('div', { class: 'fb-stash-wrap' });
+
+  function save(next) {
+    api('/api/phrases', { method: 'POST', body: { phrases: next } }).then(function (r) {
+      if (r.ok) {
+        S.settings = r.settings || set;
+        toast('短语已保存', 'ok');
+        render();
+      } else toast(r.error || '保存失败', 'error');
+    });
+  }
+
+  wrap.appendChild(h('div', { class: 'fb-sub-head' }, [h('span', { text: '快捷短语 · ' + list.length + ' 条' })]));
+
+  var rows = h('div', { class: 'fb-stash' });
+  if (!list.length) rows.appendChild(h('div', { class: 'fb-note', text: '还没有短语。加几条常用语，就能在输入框工具栏一键发送。' }));
+  for (var i = 0; i < list.length; i++) {
+    (function (idx) {
+      rows.appendChild(
+        h('div', { class: 'fb-stash-row' }, [
+          h('div', { class: 'fb-stash-main' }, [
+            h('div', { class: 'fb-stash-text', text: list[idx].label }),
+            h('div', { class: 'fb-stash-meta', text: (list[idx].text || '').replace(/\s+/g, ' ').slice(0, 120) }),
+          ]),
+          h('div', { class: 'fb-stash-ops' }, [
+            h('button', {
+              class: 'fb-mini-btn is-danger',
+              text: '删',
+              onclick: function () {
+                var next = list.slice();
+                next.splice(idx, 1);
+                save(next);
+              },
+            }),
+          ]),
+        ]),
+      );
+    })(i);
+  }
+  wrap.appendChild(rows);
+
+  var lb = h('input', { class: 'fb-input', placeholder: '名称（例如：日报模板）' });
+  var tx = h('input', { class: 'fb-input', placeholder: '内容（点按钮时发出去的原话）' });
+  var addRow = h('div', { class: 'fb-add-row' }, [
+    lb,
+    tx,
+    h('button', {
+      class: 'fb-btn is-primary',
+      text: '添加',
+      onclick: function () {
+        var label = (lb.value || '').trim();
+        var text = tx.value || '';
+        if (!label || !text.trim()) { toast('名称和内容都要填', 'warn'); return; }
+        if (list.length >= 60) { toast('最多 60 条', 'warn'); return; }
+        var next = list.concat([{ label: label, text: text }]);
+        save(next);
+      },
+    }),
+  ]);
+  wrap.appendChild(addRow);
+  return wrap;
 }
 
 function viewEnhance() {
@@ -1001,8 +1572,18 @@ function viewEnhance() {
 
   function setOpt(name, on, cb) {
     api('/api/settings/set', { method: 'POST', body: { name: name, enabled: on } }).then(function (r) {
-      if (r.ok) { toast('已保存', 'ok'); S.settings = r.settings || set; }
-      else { toast(r.error || '保存失败', 'error'); cb(true); }
+      if (r.ok) {
+        toast('已保存', 'ok');
+        S.settings = r.settings || set;
+        // 开关一变，注入在输入框里那两颗按钮要跟着出现/消失
+        if (name === 'stashPrompt' || name === 'quickPhrases') {
+          setTimeout(function () { setupComposerTools(); }, 120);
+        }
+        render();
+      } else {
+        toast(r.error || '保存失败', 'error');
+        cb(true);
+      }
     });
   }
 
@@ -1014,10 +1595,15 @@ function viewEnhance() {
   ]);
 
   var ac = h('div', { class: 'fb-list' }, [
-    optionRow('异常中断自动续接', 'AI 回复因网络波动中断时，自动让它继续。', soonSwitch()),
-    optionRow('暂存提示词按钮', '在输入框操作栏加一个按钮，把当前草稿（含图片文件）推进待发送队列。', soonSwitch()),
-    optionRow('快捷短语按钮', '输入框操作栏一键发送常用语。', soonSwitch()),
+    optionRow('异常中断自动续接', 'AI 回复因网络波动中断时，自动让它继续（优先点官方的「继续」）。', switchEl(!!set.autoContinue, function (on, revert) { setOpt('autoContinue', on, revert); })),
+    optionRow('暂存提示词按钮', '在输入框操作栏加一个按钮，把当前草稿（含图片文件）推进待发送队列。', switchEl(!!set.stashPrompt, function (on, revert) { setOpt('stashPrompt', on, revert); })),
+    optionRow('快捷短语按钮', '输入框操作栏一键发送常用语。', switchEl(!!set.quickPhrases, function (on, revert) { setOpt('quickPhrases', on, revert); })),
   ]);
+
+  if (set.stashPrompt) ac.appendChild(stashBlock());
+  if (set.quickPhrases) ac.appendChild(phrasesBlock());
+
+  if (set.stashPrompt && !stashCache.at) loadStash(true);
 
   return h('div', { class: 'fb-view' }, [
     head,
@@ -2048,6 +2634,15 @@ function refresh(force) {
     S.accounts = r.accounts || [];
     S.settings = r.settings || {};
     if (r.status && r.status.port) S.livePort = r.status.port;
+    // 设置是异步取回来的：mount() 那一刻 S.settings 还是空的，
+    // 所以每次拿到新设置都要按变化重挂一次输入框里的按钮 / 自动续接。
+    var sig = [S.settings.noDisturb, S.settings.autoContinue, S.settings.stashPrompt, S.settings.quickPhrases, (S.settings.phrases || []).length].join('|');
+    if (sig !== S.setSig) {
+      S.setSig = sig;
+      try { setupNoDisturb(); } catch (e) {}
+      try { setupComposerTools(); } catch (e) {}
+      try { setupAutoContinue(); } catch (e) {}
+    }
     render();
     return ensureTabData(!!force);
   });
@@ -2163,6 +2758,8 @@ function mount() {
 
   setupFabDrag();
   setupNoDisturb();
+  setupComposerTools();
+  setupAutoContinue();
   render();
 
   // 页面级快捷键：Esc 关面板

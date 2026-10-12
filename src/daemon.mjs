@@ -106,9 +106,62 @@ const DEFAULT_SETTINGS = {
   autoContinue: false,
   stashPrompt: false,
   quickPhrases: false,
+  // 快捷短语：面板里维护，注入到输入框的那个按钮读它
+  phrases: [],
   sleepMode: 'allow',
   displaySleep: true,
 };
+
+/* ───────── 暂存提示词（待发送队列） ─────────
+   面板侧从输入框里把草稿（含内联图片的 HTML）交上来，落一份 JSON。
+   刻意放在独立文件而不是 settings.json：草稿可能带 data: 图片，体积和设置不是一个量级。 */
+
+const STASH_LIMIT = 50;
+const STASH_ITEM_BYTES = 2 * 1024 * 1024;
+
+function stashPath() {
+  return path.join(dataDir(), 'stash.json');
+}
+
+function readStash() {
+  try {
+    const j = JSON.parse(fs.readFileSync(stashPath(), 'utf8'));
+    return Array.isArray(j.items) ? j : { items: [] };
+  } catch {
+    return { items: [] };
+  }
+}
+
+function writeStash(store) {
+  const tmp = `${stashPath()}.fb-tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, JSON.stringify(store, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, stashPath());
+  return store;
+}
+
+// 每条只留结构化的最小集：正文、HTML（保留内联图片）、以及外部附件的情况
+function normalizeStashItem(body) {
+  const text = String(body.text || '').slice(0, 200_000);
+  let html = String(body.html || '').slice(0, STASH_ITEM_BYTES);
+  const files = Array.isArray(body.files)
+    ? body.files.slice(0, 20).map((f) => ({
+        name: String((f && f.name) || '').slice(0, 200),
+        size: Number((f && f.size) || 0) || 0,
+        type: String((f && f.type) || '').slice(0, 100),
+      }))
+    : [];
+  if (!text.trim() && !files.length) throw new Error('草稿是空的，没什么可暂存的');
+  if (Buffer.byteLength(html, 'utf8') > STASH_ITEM_BYTES) html = '';
+  return {
+    id: `st_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+    at: Date.now(),
+    text,
+    html,
+    files,
+    // 记录来源档案，切账号后能看出这条草稿是从哪个账号攒的
+    profile: PROFILE.id,
+  };
+}
 
 function settingsPath() {
   return path.join(dataDir(), 'settings.json');
@@ -880,6 +933,63 @@ async function route(req, res, body) {
     } catch (e) {
       return json(res, 200, { ok: false, error: e.message });
     }
+  }
+  /* 快捷短语清单：整体替换（面板里增删改后一次提交） */
+  if (method === 'POST' && p === '/api/phrases') {
+    try {
+      const list = Array.isArray(body.phrases) ? body.phrases : [];
+      const phrases = list
+        .slice(0, 60)
+        .map((x) => ({
+          label: String((x && x.label) || '').trim().slice(0, 40),
+          text: String((x && x.text) || '').slice(0, 4000),
+        }))
+        .filter((x) => x.label && x.text.trim());
+      const next = writeSettings({ phrases });
+      if (session) await safeInject('phrases-change');
+      return json(res, 200, { ok: true, settings: next });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message });
+    }
+  }
+  /* 暂存提示词：待发送队列 */
+  if (method === 'GET' && p === '/api/stash') {
+    const store = readStash();
+    return json(res, 200, {
+      ok: true,
+      items: store.items.map((x) => ({ id: x.id, at: x.at, text: x.text, files: x.files, profile: x.profile, bytes: Buffer.byteLength(x.html || '', 'utf8') })),
+      count: store.items.length,
+    });
+  }
+  if (method === 'POST' && p === '/api/stash/add') {
+    try {
+      const item = normalizeStashItem(body);
+      const store = readStash();
+      store.items.unshift(item);
+      if (store.items.length > STASH_LIMIT) store.items.length = STASH_LIMIT;
+      writeStash(store);
+      return json(res, 200, { ok: true, item: { id: item.id, at: item.at }, count: store.items.length });
+    } catch (e) {
+      return json(res, 200, { ok: false, error: e.message });
+    }
+  }
+  if (method === 'POST' && p === '/api/stash/get') {
+    const store = readStash();
+    const it = store.items.find((x) => x.id === body.id);
+    if (!it) return json(res, 200, { ok: false, error: '这条草稿已经不在了' });
+    return json(res, 200, { ok: true, item: it });
+  }
+  if (method === 'POST' && p === '/api/stash/remove') {
+    const ids = new Set((Array.isArray(body.ids) ? body.ids : [body.id]).filter(Boolean).map(String));
+    const store = readStash();
+    const before = store.items.length;
+    store.items = store.items.filter((x) => !ids.has(x.id));
+    writeStash(store);
+    return json(res, 200, { ok: true, removed: before - store.items.length, count: store.items.length });
+  }
+  if (method === 'POST' && p === '/api/stash/clear') {
+    writeStash({ items: [] });
+    return json(res, 200, { ok: true, count: 0 });
   }
   if (method === 'POST' && p === '/api/power/sleep-mode') {
     try {
