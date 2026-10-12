@@ -3,11 +3,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
 import { BRAND, HOST, profile, dataDir } from './config.mjs';
 import { attach } from './cdplink.mjs';
 import { destroyWidget } from './injector.mjs';
-import * as power from './power.mjs';
+import * as wbproc from './platform/index.mjs';
+import { power } from './platform/index.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PROFILE = profile();
@@ -30,19 +30,6 @@ async function daemonPing(port) {
 }
 
 // 按监听端口反查 PID（避免按进程名批杀）
-function pidsOnPort(port) {
-  const r = spawnSync('powershell.exe', [
-    '-NoProfile',
-    '-Command',
-    `(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique) -join ','`,
-  ], { encoding: 'utf8', windowsHide: true });
-  return String(r.stdout || '')
-    .trim()
-    .split(',')
-    .map((x) => Number(x.trim()))
-    .filter((n) => Number.isFinite(n) && n > 0);
-}
-
 async function main() {
   console.log(`${BRAND} 停止中…`);
 
@@ -76,17 +63,13 @@ async function main() {
   } catch {
     /* 忽略 */
   }
-  const pids = pidsOnPort(PROFILE.apiPort);
+  const pids = wbproc.pidsOnPort(PROFILE.apiPort);
   if (!pids.length) {
     console.log('  没找到监听端口的进程');
     return;
   }
-  for (const pid of pids) {
-    const r = spawnSync('powershell.exe', ['-NoProfile', '-Command', `Stop-Process -Id ${pid} -Force`], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
-    console.log(r.status === 0 ? `  已结束守护进程 ${pid}` : `  结束 ${pid} 失败`);
+  for (const r of await wbproc.killPids(pids)) {
+    console.log(r.ok ? `  已结束守护进程 ${r.pid}` : `  结束 ${r.pid} 失败`);
   }
 }
 

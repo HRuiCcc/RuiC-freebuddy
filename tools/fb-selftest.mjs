@@ -2,6 +2,7 @@
 //   node tools/fb-selftest.mjs
 // 覆盖：sqlite 读写、会话纯逻辑、会话分支/删除、模型增删（含文件字节不变）、任务表增删与调度计算。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import * as db from '../src/wbdb.mjs';
 import * as models from '../src/models.mjs';
@@ -46,8 +47,16 @@ await section('wbdb / sqlite', () => {
 await section('sessions 纯逻辑', () => {
   ok('slug 盘符小写', wb.slugFor('C:\\Users\\Admin\\WorkBuddy\\2026-09-17-21-10-04') === 'c-Users-Admin-WorkBuddy-2026-09-17-21-10-04', wb.slugFor('C:\\Users\\Admin\\WorkBuddy\\2026-09-17-21-10-04'));
   ok('slug 短路径', wb.slugFor('C:\\Users\\Admin\\AppData\\Local\\Temp\\wb-final') === 'c-Users-Admin-AppData-Local-Temp-wb-final');
-  const file = wb.findSessionFile('8fe1ef71-f272-4f1d-a7d5-eab90e8da0dc');
-  ok('找到示例会话文件', !!file && !file.ambiguous, file && file.file);
+  // 示例会话取本机真实存在的一条（不写死 id —— 写死的话换台机器/换个平台就跑不了）
+  let sampleId = null;
+  try {
+    const r = db.get('SELECT id FROM sessions WHERE deleted_at IS NULL ORDER BY COALESCE(last_activity_at, updated_at) DESC LIMIT 1');
+    sampleId = r && r.id;
+  } catch {
+    /* 库不可用时留空，下面会记为失败 */
+  }
+  const file = sampleId ? wb.findSessionFile(sampleId) : null;
+  ok('找到示例会话文件', !!file && !file.ambiguous, (file && file.file) || `sampleId=${sampleId}`);
   if (file && !file.ambiguous) {
     const text = wb.readRecordsFile(file.file);
     const parsed = wb.parseRecords(text);
@@ -59,8 +68,8 @@ await section('sessions 纯逻辑', () => {
     ok('锚点 0 → 拒绝', wb.planFork(text, 0).ok === false);
     ok('标题加后缀', wb.forkedTitle('测试标题') === '测试标题（分支）');
     ok('长标题截断', wb.forkedTitle('x'.repeat(200)).length === 60);
-    const rb = wb.rebindRecords(plan.text, { newSessionId: 'NEW-ID', oldSessionId: '8fe1ef71-f272-4f1d-a7d5-eab90e8da0dc' });
-    ok('重绑 sessionId', rb.text.includes('"NEW-ID"') && !rb.text.includes('8fe1ef71-f272-4f1d-a7d5-eab90e8da0dc'), `${rb.changed} 行改动`);
+    const rb = wb.rebindRecords(plan.text, { newSessionId: 'NEW-ID', oldSessionId: sampleId });
+    ok('重绑 sessionId', rb.text.includes('"NEW-ID"') && !rb.text.includes(sampleId), `${rb.changed} 行改动`);
     const a = wb.buildAnchors(parsed.records)[0];
     const desc = wb.describeAnchor(a);
     ok('锚点描述可读', typeof desc === 'string' && desc.startsWith('#001'), JSON.stringify(desc).slice(0, 90));
@@ -87,11 +96,12 @@ await section('会话列表 / 分支 / 删除', () => {
   const newAnchors = wb.buildAnchors(wb.parseRecords(text).records).length;
   ok('记录数等于保留数', wb.parseRecords(text).records.length === f.keptRecords, `${wb.parseRecords(text).records.length}`);
   ok('锚点数匹配', newAnchors === f.keep, `${newAnchors}`);
-  // 迁移：复制到另一个工作区
-  const targetCwd = 'C:\\FreeBuddy-selftest\\ws';
+  // 迁移：复制到另一个工作区。目标用平台自己的临时目录 ——
+  // 产品要求绝对路径，而 Windows 的 `C:\...` 在 mac 上不算绝对路径。
+  const targetCwd = path.join(os.tmpdir(), 'FreeBuddy-selftest', 'ws');
   const c = sops.copy({ id: withFile.id, targetCwd, title: '自测迁移' });
   ok('迁移成功', c.ok && !!c.id, `slug=${c.slug} cwd=${c.cwd}`);
-  ok('迁移文件在新工作区', fs.existsSync(c.file) && c.file.includes('FreeBuddy-selftest') === false ? true : true, c.file);
+  ok('迁移文件在新工作区', fs.existsSync(c.file) && c.file.includes('FreeBuddy-selftest'), c.file);
   const crow = db.get('SELECT cwd FROM sessions WHERE id=?', [c.id]);
   ok('行里 cwd 已改写', !!crow && crow.cwd === targetCwd, crow && crow.cwd);
   // 删掉两个自测会话

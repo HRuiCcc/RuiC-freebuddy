@@ -145,6 +145,21 @@ export function columns(table) {
   return all(`PRAGMA table_info(${table})`).map((r) => r.name);
 }
 
+// 按「想要的列 ∩ 实际存在的列」拼 SELECT 列表。
+// 客户端各版本的列并不完全一样 —— 例如 mac 5.5.6 的 sessions 没有 transport、
+// automation_runs 没有 failure_code；缺列只该让那个字段取不到，不该让整条查询失败。
+// 表不存在或一列都对不上时返回 null，交给调用方回退成 SELECT *。
+export function selectList(table, wanted, prefix = '') {
+  let have;
+  try {
+    have = new Set(columns(table));
+  } catch {
+    return null;
+  }
+  const picked = wanted.filter((c) => have.has(c)).map((c) => prefix + c);
+  return picked.length ? picked.join(', ') : null;
+}
+
 export function tableExists(table) {
   if (!TABLE_RE.test(String(table))) return false;
   try {

@@ -66,9 +66,15 @@ export function list({ uid = null, includeBackground = true, limit = 300, query 
   params.push(Math.max(1, Math.min(1000, Number(limit) || 300)));
   let rows;
   try {
+    // 客户端各版本的 sessions 列并不完全一样（例如 mac 5.5.6 就没有 transport），
+    // 所以按「想要的列 ∩ 实际存在的列」拼 SELECT，缺列不报错、退化为不返回该字段。
+    const wanted = [
+      'id', 'cwd', 'user_id', 'title', 'custom_title', 'status', 'created_at', 'updated_at', 'last_activity_at',
+      'is_background_automation', 'model', 'source_mode', 'transport', 'project_id',
+    ];
+    const sel = db.selectList('sessions', wanted) || '*';
     rows = db.all(
-      `SELECT id, cwd, user_id, title, custom_title, status, created_at, updated_at, last_activity_at,
-              is_background_automation, model, source_mode, transport, project_id
+      `SELECT ${sel}
          FROM sessions WHERE ${where.join(' AND ')}
         ORDER BY COALESCE(last_activity_at, updated_at) DESC LIMIT ?`,
       params,

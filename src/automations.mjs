@@ -259,13 +259,26 @@ export function normalize(input, existing) {
 /* ───────── 读写任务 ───────── */
 
 function rowsFromDb() {
+  // 同 sessionops：客户端各版本列不一样，按「想要的列 ∩ 实际存在的列」拼，缺列不炸。
+  const aCols = db.selectList('automations', [
+    'id', 'name', 'prompt', 'status', 'schedule_type', 'next_run_at', 'last_run_at', 'cwds',
+    'rrule', 'scheduled_at', 'valid_from', 'valid_until', 'model_id', 'model_is_thinking',
+    'skills_json', 'push_to_wechat', 'owner_user_id', 'owner_status', 'owner_source',
+    'permission_mode', 'created_at', 'updated_at', 'deleted_at',
+  ], 'a.') || 'a.*';
+  // 运行态那几列的别名 shape() 已经在用，保持原样，别改
+  const rtMap = [
+    ['last_run_at', 'rt_last_run'],
+    ['last_error', 'rt_last_error'],
+    ['running', 'rt_running'],
+    ['running_started_at', 'rt_started'],
+  ];
+  const rCols = db.selectList('automation_runtime_state', rtMap.map(([c]) => c), 'r.');
+  const rtSel = rCols
+    ? rtMap.filter(([c]) => rCols.includes(`r.${c}`)).map(([c, alias]) => `r.${c} AS ${alias}`).join(', ')
+    : 'r.*';
   return db.all(
-    `SELECT a.id, a.name, a.prompt, a.status, a.schedule_type, a.next_run_at, a.last_run_at, a.cwds,
-            a.rrule, a.scheduled_at, a.valid_from, a.valid_until, a.model_id, a.model_is_thinking,
-            a.skills_json, a.push_to_wechat, a.owner_user_id, a.owner_status, a.owner_source,
-            a.permission_mode, a.created_at, a.updated_at, a.deleted_at,
-            r.last_run_at AS rt_last_run, r.last_error AS rt_last_error, r.running AS rt_running,
-            r.running_started_at AS rt_started
+    `SELECT ${aCols}, ${rtSel}
        FROM automations a
        LEFT JOIN automation_runtime_state r ON r.automation_id = a.id
       WHERE a.deleted_at IS NULL
@@ -326,9 +339,12 @@ export function list({ runsLimit = 30 } = {}) {
 
 export function runs(limit = 30) {
   try {
+    const sel = db.selectList('automation_runs', [
+      'thread_id', 'automation_id', 'status', 'thread_title', 'source_cwd', 'result_success', 'runs_json',
+      'failure_code', 'reason_code', 'read_at', 'created_at', 'updated_at',
+    ]) || '*';
     const rows = db.all(
-      `SELECT thread_id, automation_id, status, thread_title, source_cwd, result_success, runs_json,
-              failure_code, reason_code, read_at, created_at, updated_at
+      `SELECT ${sel}
          FROM automation_runs ORDER BY created_at DESC LIMIT ?`,
       [Math.max(1, Math.min(200, Number(limit) || 30))],
     );

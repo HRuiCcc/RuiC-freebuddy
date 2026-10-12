@@ -3,9 +3,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { dataDir } from '../src/config.mjs';
 
 const HOST = 'http://127.0.0.1:47842';
-const token = fs.readFileSync(path.join(process.env.APPDATA, 'FreeBuddy', '.api-token'), 'utf8').trim();
+const token = fs.readFileSync(path.join(dataDir(), '.api-token'), 'utf8').trim();
 const waitMin = Number(process.argv[2] || 4);
 
 async function api(p, body) {

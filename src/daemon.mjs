@@ -5,13 +5,12 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BRAND, VERSION, BUILD_ID, HOST, profile, dataDir, ensureDirs, logFile, exePath, accountFile } from './config.mjs';
 import { attach, probePort, listTargets, pickPageTarget, connect } from './cdplink.mjs';
 import { injectWidget, destroyWidget } from './injector.mjs';
 import * as store from './authstore.mjs';
-import * as wbproc from './wbproc.mjs';
+import * as wbproc from './platform/index.mjs';
 import * as loginflow from './loginflow.mjs';
 import * as tokens from './tokens.mjs';
 import * as checkincache from './checkincache.mjs';
@@ -19,7 +18,7 @@ import * as tokencache from './tokencache.mjs';
 import * as datacache from './datacache.mjs';
 import * as wbdecrypt from './wbdecrypt.mjs';
 import * as official from './official.mjs';
-import * as power from './power.mjs';
+import { power } from './platform/index.mjs';
 import * as models from './models.mjs';
 import * as sessionops from './sessionops.mjs';
 import * as automations from './automations.mjs';
@@ -593,23 +592,6 @@ async function route(req, res, body) {
     if (session) await destroyWidget(session);
     return json(res, 200, { ok: true });
   }
-  // 桌面控制台的「打开面板」：把 WorkBuddy 页面里那块面板展开。
-  if (method === 'POST' && p === '/api/panel/open') {
-    if (!session || session.closed) {
-      try { await ensureSession(); } catch (e) { log('打开面板前重连失败', e.message); }
-    }
-    if (!session || session.closed) return json(res, 200, { ok: false, error: '调试通道没连上' });
-    try {
-      const injected = await safeInject('manual');
-      if (!injected.ok) return json(res, 200, { ok: false, error: injected.error || '面板没挂上' });
-      const r = await session.evaluate(
-        `(function(){ try { if (window.__fbWidget && window.__fbWidget.open) { window.__fbWidget.open(); return 'opened' } return 'no-widget' } catch (e) { return 'error:' + e.message } })()`,
-      );
-      return json(res, 200, { ok: r === 'opened', result: r });
-    } catch (e) {
-      return json(res, 200, { ok: false, error: e.message });
-    }
-  }
   if (method === 'POST' && p === '/api/backup') {
     try {
       const r = store.backupCurrent();
@@ -1105,7 +1087,7 @@ async function route(req, res, body) {
 
   if (method === 'POST' && p === '/api/open-dir') {
     try {
-      spawn('explorer.exe', [dataDir()], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+      wbproc.openPath(dataDir());
       return json(res, 200, { ok: true });
     } catch (e) {
       return json(res, 200, { ok: false, error: e.message });
@@ -1115,7 +1097,7 @@ async function route(req, res, body) {
     try {
       const target = String(body.path || '');
       if (!target || !fs.existsSync(target)) throw new Error('路径不存在');
-      spawn('explorer.exe', [target], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
+      wbproc.openPath(target);
       return json(res, 200, { ok: true });
     } catch (e) {
       return json(res, 200, { ok: false, error: e.message });

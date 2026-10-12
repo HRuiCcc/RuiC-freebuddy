@@ -6,61 +6,15 @@
   "description": "FreeBuddy — WorkBuddy 桌面端的本机增强面板：多账号秒切 / 跨账号积分签到 / Token 用量统计",
   "author": "HRuiCcc",
   "license": "AGPL-3.0",
-  "main": "desktop/main.cjs",
+  "type": "module",
   "scripts": {
-    "desktop": "electron .",
-    "assets": "py build/make-assets.py",
-    "build:win": "electron-builder --win nsis --x64 --publish never",
-    "build:win:portable": "electron-builder --win portable --x64 --publish never"
+    "start": "node src/launcher.mjs",
+    "stop": "node src/stop.mjs",
+    "daemon": "node src/daemon.mjs",
+    "probe": "node tools/probe-mac.mjs",
+    "selftest": "node tools/fb-selftest.mjs"
   },
-  "devDependencies": {
-    "electron": "44.4.5",
-    "electron-builder": "26.15.3"
-  },
-  "build": {
-    "appId": "local.ruic.freebuddy",
-    "productName": "FreeBuddy",
-    "directories": {
-      "output": "release",
-      "buildResources": "build"
-    },
-    "files": [
-      "desktop/**/*",
-      "src/**/*",
-      "scripts/**/*",
-      "package.json"
-    ],
-    "asar": false,
-    "publish": [],
-    "artifactName": "FreeBuddy-Setup-${version}-win-${arch}.${ext}",
-    "win": {
-      "target": "nsis",
-      "icon": "build/icon.ico",
-      "signExecutable": false
-    },
-    "portable": {
-      "artifactName": "FreeBuddy-${version}-win-${arch}-portable.${ext}"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "FreeBuddy",
-      "menuCategory": false,
-      "runAfterFinish": true,
-      "deleteAppDataOnUninstall": false,
-      "installerLanguages": ["zh_CN"],
-      "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico",
-      "installerHeader": "build/installerHeader.bmp",
-      "installerSidebar": "build/installerSidebar.bmp",
-      "uninstallerSidebar": "build/installerSidebar.bmp",
-      "license": "build/license.txt",
-      "include": "build/installer.nsh",
-      "artifactName": "FreeBuddy-Setup-${version}-win-${arch}.${ext}"
-    }
+  "engines": {
+    "node": ">=22.5"
   }
 }

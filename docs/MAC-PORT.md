@@ -6,6 +6,33 @@
 
 ---
 
+## 落地结果（2026-10-12 实测）
+
+**P0 → P1 已完成并通过真机验收**，与本文预测的差异逐条记录在这里：
+
+| 项 | 预测 | 实测 |
+|---|---|---|
+| R1 at-rest 密钥（成败手） | 未知，mac 包里绑定是否同名可用待验 | **✓ 可用**。`keytool.cjs` 以 `ELECTRON_RUN_AS_NODE=1` 跑包内二进制拿到 `FBKEY`（payload v1，keyLen=44），守护进程日志「已取得静态加密密钥」 |
+| R2 登录文件路径 | 候选三个，需扫 | **✓ 命中第一个候选**：`~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info` |
+| R3 `ps -o comm=` 是否给全路径 | 可能退化为 basename | **✓ 给全路径**，精确全等匹配可用；Helper 进程路径带 ` Helper.app`，天然不误伤 |
+| mac 客户端版本 | 5.6+（以为静态加密已生效） | **实测 5.5.6**，登录文件**根本没有 `$wbEncrypted` 信封**（顶层键 `account`/`auth`/`accounts`，明文）。⇒ 解密链路是**备用**而非必需 |
+| 可执行文件路径 | `Contents/MacOS/WorkBuddy` | **实际叫 `Electron`**（按 `CFBundleExecutable`）。⇒ 代码里读 Info.plist 取，不写死产品名 |
+| 数据库列 | 与 Windows 一致 | **不一致**：5.5.6 的 `sessions` 没有 `transport`，`automation_runs` 没有 `failure_code`/`reason_code`。⇒ 新增 `wbdb.selectList()`，查询按「想要的列 ∩ 实际存在的列」拼 |
+
+额外结论：
+
+- **`src/platform/` 平台层已接线**：`index.mjs` 选实现，`win.mjs` 是**薄转发**（直接 re-export 未被
+  改动的 `wbproc.mjs` / `power.mjs`，Windows 行为等于零改动），`mac.mjs` 用系统自带命令实现。
+  调用方（daemon / launcher / stop）只把 import 指向 `platform/index.mjs`，函数体一行未改。
+- **控制台外壳已整体删除**（`desktop/`、`build/` 与打包配置）—— 这个项目只保留注入面板。
+  因此本文 §4.5、§4.6 与 §7 的 P2/P3 **不再适用**，留作历史记录。
+  mac 侧的替代品：`scripts/Start-FreeBuddy.command` / `Stop-FreeBuddy.command`（等价 Windows 的 `.cmd`）；
+  前台化由 `launcher.mjs` 收尾调用 `platform.focusApp()` 完成。
+- 验收证据：面板在 WorkBuddy 5.5.6 里注入成功（`{"host":true,"api":"object","fab":true}`）、
+  自动备份账号、跨账号积分与签到状态取到、`/api/sessions` 返回真实会话、stop 路径能摘面板并停守护进程。
+
+---
+
 ## 0. 结论（先看这段）
 
 1. **可做，工作量小。** 现有代码约 **90% 平台无关**：CDP 客户端、面板、账号解析、静态解密、
@@ -42,8 +69,8 @@
 | 4 | `src/daemon.mjs:917` | `explorer.exe <dir>` | `open <dir>` |
 | 5 | `src/stop.mjs:34-44,85` | `Get-NetTCPConnection` + `Stop-Process` | `lsof`，或直接读 `.daemon.lock` 里的 pid |
 | 6 | `src/wbdecrypt.mjs:55` | 以 `.exe` 跑 `keytool.cjs` | 只需 `exePath()` 返回 mac 路径，**代码本身不用改** |
-| 7 | `desktop/main.cjs` | `reg.exe` 自启 / `WScript.AppActivate` 焦点 / 安装目录 | `app.setLoginItemSettings` / `open -a` / mac 目录；另需一个最小 mac 应用菜单 |
-| 8 | `scripts/*.cmd`、NSIS 打包 | `.cmd` + `.ico/.bmp` | `.command` 或直接双击 `.app`；打包换 `dmg` |
+| 7 | ~~`desktop/main.cjs`~~（已删除） | `reg.exe` 自启 / `WScript.AppActivate` 焦点 / 安装目录 | `app.setLoginItemSettings` / `open -a` / mac 目录；另需一个最小 mac 应用菜单 |
+| 8 | `scripts/*.cmd`（已补 `.command`）、~~NSIS 打包~~ | `.cmd` + `.ico/.bmp` | `.command` 或直接双击 `.app`；打包换 `dmg` |
 
 **完全不用碰（平台无关）**：`cdplink.mjs`、`injector.mjs`、`src/panel/*`、`authstore.mjs`、
 `official.mjs`、`loginflow.mjs`、`tokens.mjs`、`checkincache/tokencache/datacache`、`keytool.cjs`。
@@ -140,7 +167,7 @@ ps -Ao pid=,comm= | awk -v t="/Applications/WorkBuddy.app/Contents/MacOS/WorkBud
   `RunAtLoad=true` + `ProgramArguments=[<FreeBuddy.app>/Contents/MacOS/FreeBuddy, --hidden]`。
 - `--hidden` 在 mac 上还要额外 `app.dock.hide()`，否则隐藏启动仍会在 Dock 留图标。
 
-### 4.5 控制台外壳（`desktop/main.cjs`）的 mac 适配
+### 4.5 控制台外壳（`desktop/main.cjs`）的 mac 适配 —— ⚠️ 已废弃（控制台整体删除，留作历史）
 
 1. **托盘图**：菜单栏用 22pt 模板图（`trayTemplate.png` + `@2x`）+ `setTemplateImage(true)`，否则浅色菜单栏下看不见。
 2. **应用菜单**：现在 `Menu.setApplicationMenu(null)` 在 mac 上会导致**没有 Cmd+Q / Cmd+C**。
@@ -150,7 +177,7 @@ ps -Ao pid=,comm= | awk -v t="/Applications/WorkBuddy.app/Contents/MacOS/WorkBud
    mac 上 `process.execPath` = `.../FreeBuddy.app/Contents/MacOS/FreeBuddy`，**同一套写法直接可用**。
 5. `app.on('window-all-closed')` 已是"不退出"，符合 mac 习惯。
 
-### 4.6 打包与签名
+### 4.6 打包与签名 —— ⚠️ 已废弃（只保留注入面板，不再打包）
 
 - `electron-builder` mac target：`['dmg', 'zip']`，`category: public.app-category.utilities`，
   `icon: build/icon.icns`（可由现有 `icon.png` 自动生成），`identity: null`（**强制不签名构建**，省掉证书环节）。
@@ -204,8 +231,8 @@ node src/launcher.mjs || { echo "出错，日志在 ~/Library/Application Suppor
 |---|---|---|
 | **P0** | 在 Mac 上装 WorkBuddy（官方 dmg）+ 跑 `tools/probe-mac.mjs` 全量 | 拿到 R1/R2/R3 的确定结论；`--json` 报告存档 |
 | **P1** | 建 `src/platform/`（win 原样搬 + mac 新写）；`config.mjs` 加 mac 档案；`wbproc`/`power`/`stop`/`daemon:917` 改 import | Windows 冒烟逐条日志与改前一致；Mac 上 `node src/launcher.mjs` 能注入出面板 |
-| **P2** | `desktop/main.cjs` 的 mac 分支（自启 / 焦点 / 菜单 / 托盘模板图 / dock.hide） | Mac 上控制台窗口、托盘、启动注入、开机自启四件事都对 |
-| **P3** | `electron-builder` mac 配置 + `icon.icns` + dmg 构建 + ad-hoc 签名 | 双击装进 /Applications、首启过 Gatekeeper、面板可用 |
+| **P2** | ~~`desktop/main.cjs` 的 mac 分支（自启 / 焦点 / 菜单 / 托盘模板图 / dock.hide）~~ **已废弃** | 控制台外壳整体删除，不再需要 |
+| **P3** | ~~`electron-builder` mac 配置 + `icon.icns` + dmg 构建 + ad-hoc 签名~~ **已废弃** | 同上；mac 侧改为双击 `scripts/Start-FreeBuddy.command` |
 
 ---
 

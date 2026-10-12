@@ -1,17 +1,11 @@
-# 依赖（本机是指向别的工程 node_modules 的 junction，绝不能进库）
+# 依赖（本项目零 npm 依赖，全是 Node 内置模块；这个目录只在本地做实验时会出现）
 node_modules/
 
-# 构建产物：NSIS 安装包 ~107MB，clone 下来自己 build 即可
-release/
-dist/
-*.blockmap
-latest.yml
-
-# 验收截图（screen grab，不是源码资产；brand 资产在 build/ 里）
+# 验收截图（screen grab，不是源码资产）
 tools/*.png
 tools/*.log
 
-# 运行期落盘的东西（数据目录本来就在 %APPDATA%）
+# 运行期落盘的东西（数据目录在 %APPDATA%\FreeBuddy 或 ~/Library/Application Support/FreeBuddy）
 *.log
 _*.tmp
 
@@ -19,5 +13,3 @@ _*.tmp
 Thumbs.db
 desktop.ini
 .DS_Store
-# 临时预览图（自己 eyeball 用的，不是资产）
-build/_*.png

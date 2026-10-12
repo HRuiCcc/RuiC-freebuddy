@@ -8,7 +8,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BRAND, VERSION, HOST, profile, dataDir, ensureDirs, exePath } from './config.mjs';
-import * as wbproc from './wbproc.mjs';
+import * as wbproc from './platform/index.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PROFILE = profile();
@@ -118,6 +118,12 @@ async function main() {
   const r = await inject();
   if (r.ok) out('面板已注入 —— 看 WorkBuddy 窗口右下角。');
   else out(`暂时没能挂上（${r.error}）。守护进程会在页面就绪后自动补种，不用重跑。`);
+  // 把 WorkBuddy 顶到前台，让人一眼看到面板（mac：open -a；Windows：还原最小化首窗并置前）
+  try {
+    out(`前台化：${wbproc.focusApp()}`);
+  } catch {
+    /* 前台化失败不影响面板已经挂上这件事 */
+  }
   process.exit(0);
 }
 

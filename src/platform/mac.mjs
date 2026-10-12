@@ -1,25 +1,23 @@
-// FreeBuddy —— macOS 平台实现（参考落地件；P1 阶段再由 index.mjs 接线）
+// FreeBuddy —— macOS 平台实现。
 //
 // 只依赖系统自带命令（ps / kill / open / lsof / caffeinate），零 npm 依赖。
 // 接口与 win.mjs 一一对应，语义对齐：
-//   findRunning / stopExact / launchWithCdp / waitTarget / cleanChildEnv
+//   findRunning / stopExact / killPids / launchWithCdp / waitTarget / cleanChildEnv
 //   openInBrowser / openPath / focusApp / pidsOnPort
 //   power.{getMode,isHolding,setMode,setDisplaySleep}
-//   autostart.{get,set}
 //
 // 关键约定与 Windows 侧一致：一切判定基于「可执行文件绝对路径 + PID」，
 // 绝不按进程名批杀 —— mac 上 Electron 会派生一堆 * Helper 进程，按名批杀会连渲染进程一起打死。
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { exePath, appBundle, profile } from '../config.mjs';
 import { probePort, listTargets, pickPageTarget } from '../cdplink.mjs';
 
 /* ───────── 进程控制 ───────── */
 
 // mac 上 `ps -o comm=` 对 GUI 程序给的是完整可执行路径；
 // Helper 进程的路径里带 " Helper.app"，精确全等匹配天然只命中主进程。
-export function findRunning(target) {
+export function findRunning(target = exePath()) {
   if (!target) return [];
   const r = spawnSync('ps', ['-Ao', 'pid=,comm='], { encoding: 'utf8' });
   const want = path.resolve(target);
@@ -83,6 +81,29 @@ export async function stopExact(pids, log = () => {}) {
   return findRunning().length === 0;
 }
 
+// 结束任意 PID（stop.mjs 用它收掉守护进程）：先给一次优雅退出的机会，再补刀。
+export async function killPids(pids) {
+  const done = [];
+  for (const pid of pids) {
+    const n = Number(pid);
+    try {
+      process.kill(n, 'SIGTERM');
+      done.push({ pid: n, ok: true });
+    } catch {
+      done.push({ pid: n, ok: false });
+    }
+  }
+  await new Promise((r) => setTimeout(r, 1500));
+  for (const d of done) {
+    try {
+      process.kill(d.pid, 'SIGKILL');
+    } catch {
+      /* 已退出 */
+    }
+  }
+  return done;
+}
+
 // 与 Windows 侧同一坑：守护进程可能由「Electron 当 Node 跑」的宿主拉起，
 // 那种环境带 ELECTRON_RUN_AS_NODE=1；透传给 WorkBuddy 会让它以 Node 模式启动并立刻退出。
 export function cleanChildEnv(env = process.env) {
@@ -95,9 +116,13 @@ export function cleanChildEnv(env = process.env) {
 
 // 用 open -a 拉起：走 LaunchServices，mac 上比直接 spawn 二进制更稳。
 // 注意：对已在运行的 app，open 只做激活、不会追加参数 ⇒ 调用前必须先 stopExact（现有流程即如此）。
-export function launchWithCdp(port, bundle) {
-  const args = ['-a', bundle, '--args', `--remote-debugging-port=${port}`];
-  const child = spawn('open', args, { detached: true, stdio: 'ignore', env: cleanChildEnv() });
+export function launchWithCdp(port = profile().cdpPort) {
+  const bundle = appBundle() || profile().appDir;
+  const child = spawn('open', ['-a', bundle, '--args', `--remote-debugging-port=${port}`], {
+    detached: true,
+    stdio: 'ignore',
+    env: cleanChildEnv(),
+  });
   child.unref();
   return true;
 }
@@ -114,7 +139,8 @@ export function openPath(p) {
 }
 
 // 等价 Windows 侧的 WScript.AppActivate：把 WorkBuddy 提到前台
-export function focusApp(bundle) {
+export function focusApp() {
+  const bundle = appBundle() || profile().appDir;
   const r = spawnSync('open', ['-a', bundle], { encoding: 'utf8' });
   return r.status === 0 ? 'activated' : 'err:' + String(r.stderr || '').trim();
 }
@@ -132,6 +158,7 @@ export function pidsOnPort(port) {
 // caffeinate 就是 mac 上的 SetThreadExecutionState。
 //  -i 禁止空闲休眠 · -s 禁止系统休眠（仅接电时生效） · -d 禁止息屏
 //  -w <pid>：守护进程一退 caffeinate 自己退，不会留下"锁没放"的孤儿。
+// 已知边界：合盖休眠（clamshell）caffeinate 挡不住，这是 mac 自身规则，不修。
 let child = null;
 let current = { mode: 'allow', displaySleep: true };
 
@@ -173,50 +200,6 @@ export function setDisplaySleep(enabled) {
   return getMode();
 }
 
-/* ───────── 开机自启 ───────── */
-
-// 首选在 Electron 主进程里用 app.setLoginItemSettings()（见 docs/MAC-PORT.md §4.4）；
-// 这里给的是脱离 Electron 的 LaunchAgent 退路。
-export function launchAgentPath() {
-  return path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.freebuddy.console.plist');
-}
-
-export function renderPlist(binPath, hidden = true) {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.freebuddy.console</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${binPath}</string>
-${hidden ? '    <string>--hidden</string>\n' : ''}  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><false/>
-</dict>
-</plist>
-`;
-}
-
-export function autostartGet() {
-  return fs.existsSync(launchAgentPath());
-}
-
-export function autostartSet(on, binPath) {
-  const file = launchAgentPath();
-  try {
-    if (on) {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, renderPlist(binPath || process.execPath, true));
-      spawnSync('launchctl', ['load', '-w', file]);
-    } else if (fs.existsSync(file)) {
-      spawnSync('launchctl', ['unload', '-w', file]);
-      fs.unlinkSync(file);
-    }
-  } catch {
-    /* 忽略，由调用方读回真实状态 */
-  }
-  return autostartGet();
-}
+export const power = { isHolding, getMode, setMode, setDisplaySleep };
 
 export const platform = 'darwin';

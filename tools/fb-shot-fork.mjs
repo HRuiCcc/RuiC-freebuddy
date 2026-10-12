@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { attach } from '../src/cdplink.mjs';
+import { dataDir } from '../src/config.mjs';
 
 const out = process.argv[2] || 'tools/fb-fork-dialog.png';
 const a = await attach(9222);
@@ -11,7 +12,7 @@ if (!a) {
 }
 const { session } = a;
 await session.send('Page.enable');
-const token = fs.readFileSync(path.join(process.env.APPDATA || '', 'FreeBuddy', '.api-token'), 'utf8').trim();
+const token = fs.readFileSync(path.join(dataDir(), '.api-token'), 'utf8').trim();
 await fetch('http://127.0.0.1:47842/api/inject', { method: 'POST', headers: { 'X-FreeBuddy-Token': token } });
 await new Promise((r) => setTimeout(r, 700));
 

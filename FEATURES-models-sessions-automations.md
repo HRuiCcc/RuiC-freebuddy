@@ -1,8 +1,7 @@
-# FreeBuddy · 模型管理 / 会话分支迁移 / 自动化任务（本次新增）
+# FreeBuddy · 模型管理 / 会话分支迁移 / 自动化任务
 
-> 2026-10-11 落。**README.md 与 package.json 由并行的一条打包线（desktop/ 里的 Electron 封装）在维护，
-> 这份说明单独放一个文件，不去改它的。** 代码在 `src/`，`package.json` 的 `files` 已含 `src/**/*`，
-> 所以这些功能会一起被打进安装包。
+> 2026-10-11 落。这三个页签都在 `src/`，面板入口在 `src/panel/`；`package.json` 只是描述文件，
+> 这个项目**零 npm 依赖**，直接 `node src/launcher.mjs` 就跑。
 
 ## 一、模型管理（`src/models.mjs`）
 
@@ -106,4 +105,7 @@ node tools/fb-shot-fork.mjs      # 截分支弹窗
   在真机上已确认会话能创建成功、但**「客户端会不会按这份截断记录重建出界面」没有逐条比对过**。
 - 模型/设置的写入需要客户端**重新载入配置或重启**才生效（没有文件监听）。
 - `node:sqlite` 在 Node 24 是实验特性：加载时临时静音 `ExperimentalWarning`，不写日志。
-- 只实现 Windows。
+- Windows 与 macOS 都已实现（2026-10-12 补 mac）。两边客户端**同版本号下数据库列也可能不同**，
+  所以所有查询都按「想要的列 ∩ 实际存在的列」拼（`wbdb.selectList`），缺列只让那个字段取不到。
+- macOS 实测：WorkBuddy 5.5.6 的 `sessions` 没有 `transport`、`automation_runs` 没有
+  `failure_code` / `reason_code`；`automations` / `automation_runtime_state` 与 Windows 一致。
