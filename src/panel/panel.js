@@ -230,12 +230,11 @@ function confirmDialog(title, text, okLabel, onOk, danger) {
 
 /* ───────── 视图：账号 ───────── */
 
+// 积分类数字一律给完整位数，不缩写成 k —— 「20k」看着不如「20,480」有分量。
 function fmtNum(n) {
   if (n === null || n === undefined || isNaN(n)) return '—';
-  if (n >= 100000) return Math.round(n / 1000) + 'k';
-  if (n >= 10000) return (n / 1000).toFixed(1) + 'k';
   if (n % 1 !== 0) return String(Math.round(n * 10) / 10);
-  return String(Math.round(n));
+  return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 function isPaidEdition(edition) {
