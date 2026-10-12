@@ -3,6 +3,10 @@
 WorkBuddy 桌面端的**本机增强面板** —— 多账号备份与秒切、跨账号积分/签到、Token 用量统计、
 模型管理、会话分支与迁移、定时任务、输入框增强、免打扰与休眠控制。
 
+> ### ⬇️ [下载 macOS 安装包（FreeBuddy-0.1.0.dmg，约 40 MB）](https://github.com/HRuiCcc/RuiC-freebuddy/releases/latest)
+> 拖进「应用程序」即可，**包内自带 Node 运行时**，不需要另装 node。
+> 首次打开若被拦下（未做苹果公证）：右键点 FreeBuddy →「打开」→ 再点「打开」。
+
 ![面板](assets/panel.png)
 
 <sub>截图里只把账号名字与手机号打了码，其余（状态徽标、账号数、积分、有效期）全部按原样显示。</sub>
