@@ -241,6 +241,12 @@ button {
   width: 15px;
   height: 15px;
 }
+/* 演示模式下禁用的按钮（如账号备注编辑）：压暗、不响应悬停 */
+.fb-icon-btn[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
 
 /* ───────────────── 左侧菜单栏 ───────────────── */
 .fb-rail {

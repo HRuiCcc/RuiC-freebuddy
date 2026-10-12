@@ -295,7 +295,13 @@ function accountRow(acc) {
       }, [svg(ICONS.star)]),
     );
   }
-  ops.appendChild(h('button', { class: 'fb-icon-btn', title: '备注', onclick: function () { editNote(acc); } }, [svg(ICONS.edit)]));
+  // 演示模式（打码）下不给改备注：输入框里拿到的是「耶****德」这种遮过的值，
+  // 一保存就把真备注覆盖成星号了，宁可先禁掉。
+  if (S.masked) {
+    ops.appendChild(h('button', { class: 'fb-icon-btn', title: '演示模式：账号标识已打码，暂不能改备注', disabled: 'disabled' }, [svg(ICONS.edit)]));
+  } else {
+    ops.appendChild(h('button', { class: 'fb-icon-btn', title: '备注', onclick: function () { editNote(acc); } }, [svg(ICONS.edit)]));
+  }
   if (!isCurrent) {
     ops.appendChild(
       h('button', {
@@ -2632,6 +2638,8 @@ function refresh(force) {
     S.status = r.status;
     S.accounts = r.accounts || [];
     S.settings = r.settings || {};
+    // 演示模式（账号标识打码）开关由守护进程下发
+    S.masked = !!r.masked;
     if (r.status && r.status.port) S.livePort = r.status.port;
     // 设置是异步取回来的：mount() 那一刻 S.settings 还是空的，
     // 所以每次拿到新设置都要按变化重挂一次输入框里的按钮 / 自动续接。

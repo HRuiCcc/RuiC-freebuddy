@@ -18,6 +18,7 @@ import * as tokencache from './tokencache.mjs';
 import * as datacache from './datacache.mjs';
 import * as wbdecrypt from './wbdecrypt.mjs';
 import * as official from './official.mjs';
+import { maskAccounts, maskValue, maskEnabled } from './mask.mjs';
 import { power } from './platform/index.mjs';
 import * as models from './models.mjs';
 import * as sessionops from './sessionops.mjs';
@@ -106,6 +107,9 @@ const DEFAULT_SETTINGS = {
   autoContinue: false,
   stashPrompt: false,
   quickPhrases: false,
+  // 演示模式：账号标识（名字/备注/手机号）在面板里显示成「耶****德」这种，
+  // 方便录视频；只影响显示，磁盘上的真值不动。
+  maskAccounts: false,
   // 快捷短语：面板里维护，注入到输入框的那个按钮读它
   phrases: [],
   sleepMode: 'allow',
@@ -564,7 +568,28 @@ async function buildState(force) {
   status.totalCredit = accounts.reduce((s, a) => s + (a.credit || 0), 0);
   status.accountsWithData = accounts.filter((a) => a.credit != null).length;
 
-  return { ok: true, status, accounts, settings: readSettings(), official: officialData };
+  const settings = readSettings();
+  // 演示模式：账号标识的中间部分换成 ****。
+  // 只改「发给面板的这一份」——磁盘上的备份、meta、凭据缓存，以及进程内存里的原值都不动，
+  // 关掉设置立刻恢复；录演示视频时开着，就不用逐处打马赛克。
+  if (maskEnabled(settings)) {
+    return {
+      ok: true,
+      status: {
+        ...status,
+        // uid 保留原值：面板用它比对「哪个是当前账号」
+      currentAccount: status.currentAccount
+          ? { ...status.currentAccount, nickname: maskValue(status.currentAccount.nickname, 'ident') }
+          : status.currentAccount,
+      },
+      accounts: maskAccounts(accounts),
+      settings,
+      official: officialData,
+      masked: true,
+    };
+  }
+
+  return { ok: true, status, accounts, settings, official: officialData };
 }
 
 /* ───────── HTTP 服务 ───────── */
@@ -906,6 +931,10 @@ async function route(req, res, body) {
     try {
       const r = await loginflow.pollSeamless(url.searchParams.get('loginId') || '');
       if (r.done && r.result) accountCache.clear();
+      // 演示模式下新账号的名字也要打码（面板会把它显示在提示里）
+      if (maskEnabled(readSettings()) && r.result) {
+        return json(res, 200, { ok: true, ...r, result: { ...r.result, nickname: maskValue(r.result.nickname, 'ident') } });
+      }
       return json(res, 200, { ok: true, ...r });
     } catch (e) {
       return json(res, 200, { ok: false, error: e.message });
