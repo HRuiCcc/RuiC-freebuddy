@@ -1,0 +1,11 @@
+# 打包中间产物（源码在仓库里，产物不入库）
+out/
+freebuddy-rw.dmg
+FreeBuddy-bin
+icongen
+dmgbg
+dmg-bg.png
+FreeBuddy.icns
+FreeBuddy.iconset/
+icon_1024.png
+iconset/

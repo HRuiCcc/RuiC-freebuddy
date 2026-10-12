@@ -17,6 +17,11 @@ function out(msg) {
   console.log(msg);
 }
 
+// 给图形启动器（FreeBuddy.app）用的机器可读进度标记：stdout 上按行发，非图形调用方忽略即可。
+function step(text) {
+  console.log(`[FB-STEP] ${text}`);
+}
+
 async function daemonPing() {
   try {
     const r = await fetch(`http://${HOST}:${PROFILE.apiPort}/api/ping`, { signal: AbortSignal.timeout(1200) });
@@ -82,6 +87,7 @@ async function inject(attempts = 6) {
 
 async function main() {
   out(`${BRAND} v${VERSION} · ${PROFILE.name}`);
+  step('正在准备…');
   ensureDirs();
   const exe = exePath();
   if (!fs.existsSync(exe) && !process.env.FB_WORKBUDDY_EXE) {
@@ -91,18 +97,24 @@ async function main() {
   }
   out(`客户端：${exe}`);
 
+  step('正在检查 WorkBuddy 状态…');
   let ready = await wbproc.targetReady(PROFILE.cdpPort);
   if (ready) {
     out(`调试端口 ${PROFILE.cdpPort} 已可用，直接接管`);
+    step('WorkBuddy 已在调试模式，直接接管');
   } else {
     const running = wbproc.findRunning();
     if (running.length) {
       out(`WorkBuddy 在运行但没开调试端口，按精确路径重启它（${running.length} 个进程）`);
+      step('正在按调试模式重启 WorkBuddy…');
       await wbproc.stopExact(running.map((p) => p.pid), out);
+    } else {
+      step('正在以调试模式启动 WorkBuddy…');
     }
     out(`以调试端口 ${PROFILE.cdpPort} 启动 WorkBuddy…`);
     wbproc.launchWithCdp(PROFILE.cdpPort);
     out('等待调试端口就绪（最多 60 秒）…');
+    step('等待 WorkBuddy 就绪…');
     ready = await wbproc.waitTarget(PROFILE.cdpPort, 60000);
     if (!ready) {
       out('调试端口没起来。可能是单实例逻辑接管了这次启动：请完全退出 WorkBuddy 后再运行一次 FreeBuddy。');
@@ -110,20 +122,29 @@ async function main() {
     }
   }
 
+  step('正在启动本机守护进程…');
   if (!(await ensureDaemon())) {
     out(`守护进程没能启动，请看 ${path.join(dataDir(), 'logs', 'daemon.log')}`);
     process.exit(4);
   }
 
+  step('正在把面板注入 WorkBuddy…');
   const r = await inject();
-  if (r.ok) out('面板已注入 —— 看 WorkBuddy 窗口右下角。');
-  else out(`暂时没能挂上（${r.error}）。守护进程会在页面就绪后自动补种，不用重跑。`);
+  if (r.ok) {
+    out('面板已注入 —— 看 WorkBuddy 窗口右下角。');
+    step('面板已注入 —— 看 WorkBuddy 窗口右下角');
+  } else {
+    out(`暂时没能挂上（${r.error}）。守护进程会在页面就绪后自动补种，不用重跑。`);
+    step('守护进程会在页面就绪后自动补种面板');
+  }
   // 把 WorkBuddy 顶到前台，让人一眼看到面板（mac：open -a；Windows：还原最小化首窗并置前）
+  step('正在把 WorkBuddy 顶到前台…');
   try {
     out(`前台化：${wbproc.focusApp()}`);
   } catch {
     /* 前台化失败不影响面板已经挂上这件事 */
   }
+  step('完成');
   process.exit(0);
 }
 

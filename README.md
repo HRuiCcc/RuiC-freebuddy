@@ -76,7 +76,21 @@ flowchart LR
 
 ## 运行
 
-**用法就两步**：双击启动脚本 → WorkBuddy 被接管、面板挂上去、窗口顶到前台。
+### macOS：用打包好的 App（推荐）
+
+下载 `FreeBuddy-<版本>.dmg` → 把 **FreeBuddy** 拖进「应用程序」→ 双击它。
+
+启动窗带着 logo 显示真实进度：接管 WorkBuddy → 起守护进程 → 注入面板；成功后窗口自动收起，
+WorkBuddy 已经在最前面、面板挂在右下角。窗口里另有 **停止 FreeBuddy…**（摘面板 + 释放唤醒锁
++ 停守护进程，不关 WorkBuddy）与 **查看日志**。
+
+这个 App **自带 Node 运行时**（`Contents/Resources/runtime/`），装完不依赖本机 `node`，
+也不需要 `npm install`；面板代码随包分发，删掉源码目录照样能跑。
+
+> 首次打开若被 macOS 拦下（"无法验证开发者"）：右键点 FreeBuddy → **打开** → 再点「打开」，
+> 或执行一次 `xattr -dr com.apple.quarantine /Applications/FreeBuddy.app`。
+
+### 两个平台都能用的命令行方式
 
 ```
 Windows    scripts\Start-FreeBuddy.cmd        # 启动并注入
@@ -94,11 +108,39 @@ node src/stop.mjs         # 摘掉面板、停守护进程（不关 WorkBuddy）
 node src/daemon.mjs       # 只起守护进程（面板由守护进程在页面就绪后自动补种）
 ```
 
+启动器还会在 stdout 上按行打印 `[FB-STEP] …` 进度标记 —— 上面的图形启动器靠它显示当前阶段，
+命令行里忽略即可。
+
 **本项目零 npm 依赖**，全是 Node 内置模块，所以不需要 `npm install`。
 只要 Node ≥ 22.5（`node:sqlite` 用于会话/任务管理）。
 
 启动器干的事：连上（必要时按可执行文件绝对路径精确重启成）带调试端口的 WorkBuddy
 → 拉起守护进程 → 让守护进程注入面板 → 把 WorkBuddy 顶到前台。
+
+### 自己重新打包 macOS 安装包
+
+```bash
+bash build/mac/package-mac.sh
+# 产物：build/mac/out/FreeBuddy.app 与 build/mac/out/FreeBuddy-<版本>.dmg
+```
+
+只用系统自带的 `swiftc / iconutil / sips / hdiutil / codesign`，不需要装 Xcode 全量包，也不联网。
+换一份 Node 运行时用 `FB_NODE_DIR=/path/to/node-vXX` 指定。
+
+| 文件 | 作用 |
+|---|---|
+| `build/mac/Launcher.swift` | 原生启动窗（SwiftUI）：跑包内 Node 的 `src/launcher.mjs`、显示进度、成功后自动收起 |
+| `build/mac/IconGen.swift` | 用 CoreGraphics 画应用图标（1024×1024 → 交给 `iconutil` 出 `.icns`） |
+| `build/mac/DmgBg.swift` | 安装包窗口的背景图（拖拽箭头 + 提示语） |
+| `build/mac/Info.plist` | 包信息（bundle id `cn.ruic.freebuddy`，最低 macOS 14） |
+| `build/mac/package-mac.sh` | 一键全流程：编译 → 出图标 → 组包 → ad-hoc 签名 → 打 DMG |
+
+打 DMG 有两处踩过的坑，脚本里已经绕开，改脚本时别踩回去：
+
+- **必须从 `hdiutil attach` 的输出里取真实挂载点。** 同名卷还占着时，系统会把新镜像挂成
+  `「<卷名> 1」`；照着拼的路径写就会全写进旧卷 —— 最终镜像永远是上一版，而且日志每一步都"成功"。
+- **卷图标要在 Finder 摆完布局之后再写。** 实测 Finder 改窗口布局时会顺手删掉卷根目录下的
+  `.VolumeIcon.icns`，先写就白写。
 
 ## 数据目录
 
@@ -145,6 +187,7 @@ src/wbproc.mjs       Windows 进程控制（被 platform/win.mjs 转发，未改
 src/power.mjs        Windows 休眠策略（同上）
 src/launcher.mjs     启动器；src/stop.mjs 停止器
 tools/               真机探针与截图工具（改面板后用它们验收）
+build/mac/           macOS 打包线：原生启动器 / 图标生成 / DMG 组装（一条脚本跑完）
 docs/MAC-PORT.md     macOS 落地记录（可行性事实、平台层边界、实测结论）
 ```
 
