@@ -1,9 +1,10 @@
 # 依赖（本项目零 npm 依赖，全是 Node 内置模块；这个目录只在本地做实验时会出现）
 node_modules/
 
-# 验收截图（screen grab，不是源码资产）
+# 验收截图与公开图的中间产物（screen grab，不是源码资产）
 tools/*.png
 tools/*.log
+tools/_public-*.json
 
 # 运行期落盘的东西（数据目录在 %APPDATA%\FreeBuddy 或 ~/Library/Application Support/FreeBuddy）
 *.log
