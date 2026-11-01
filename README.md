@@ -230,4 +230,5 @@ docs/MAC-PORT.md     macOS 落地记录（可行性事实、平台层边界、�
 <div align="center">
   <p>如果这个工具帮到了你，可以请我喝杯咖啡 ☕</p>
   <img src="assets/wechat-donate.png" width="300" alt="微信赞赏码">
+  <p>微号：<strong>hrc_rch</strong>（说明来意）</p>
 </div>
